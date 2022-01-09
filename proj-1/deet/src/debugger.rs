@@ -32,34 +32,58 @@ impl Debugger {
     pub fn run(&mut self) {
         loop {
             match self.get_next_command() {
+                // handle run commmand
                 DebuggerCommand::Run(args) => {
+                    // before we run a new inferio, kill existing inferiors if any
+                    if self.inferior.is_some() {
+                        println!("Killing running inferior (pid {})", self.inferior.as_ref().unwrap().pid());
+                        self.inferior.as_mut().unwrap().kill();
+                    }
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         match self.inferior.as_ref().unwrap().cont(){
-                            Ok(status) => {
-                                match status{
-                                    Status::Stopped(_signal, _usize) => {
-                                        println!("Inferior stopped");
-                                    },
-                                    Status::Exited(exit_code) => {
-                                        println!("Child exited (status {})", exit_code);
-                                    },
-                                    Status::Signaled(_signal) => {
-                                        println!("Inferior exited due to signal");
-                                    },
-                                }
-                            },
+                            Ok(status) => self.handle_status(status),
                             Err(err) => panic!("{}", err),
                         }
                     } else {
                         println!("Error starting subprocess");
                     }
-                }
+                },
+                // handle quit command
                 DebuggerCommand::Quit => {
+                    if self.inferior.is_some() {
+                        println!("Killing running inferior (pid {})", self.inferior.as_ref().unwrap().pid());
+                        self.inferior.as_mut().unwrap().kill();
+                    }
                     return;
+                },
+                // handle continue command
+                DebuggerCommand::Continue => {
+                    if self.inferior.is_none(){
+                        println!("No inferior to continue");
+                    } else {
+                        match self.inferior.as_ref().unwrap().cont(){
+                            Ok(status) => self.handle_status(status),
+                            Err(err) => panic!("{}", err),
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    fn handle_status(&self, status: Status) {
+        match status{
+            Status::Stopped(signal, _usize) => {
+                println!("Child stopped (signal {})", signal);
+            },
+            Status::Exited(exit_code) => {
+                println!("Child exited (status {})", exit_code);
+            },
+            Status::Signaled(_signal) => {
+                println!("Inferior exited due to signal");
+            },
         }
     }
 

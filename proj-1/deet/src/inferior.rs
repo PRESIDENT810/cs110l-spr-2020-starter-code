@@ -88,4 +88,14 @@ impl Inferior {
             Err(e) => panic!("ptrace cont failed: {:?}", e),
         }
     }
+
+    pub fn kill(&mut self) -> Result<(), std::io::Error>{
+        match self.child.kill(){
+            Ok(_) => {
+                self.wait(None);
+                return Ok(());
+            },
+            Err(e) => Err(e),
+        }
+    }
 }
