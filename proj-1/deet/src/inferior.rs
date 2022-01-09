@@ -3,6 +3,8 @@ use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use std::process::Child;
+use std::process::Command;
+use std::os::unix::process::CommandExt;
 
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
@@ -26,6 +28,7 @@ fn child_traceme() -> Result<(), std::io::Error> {
     )))
 }
 
+/// An inferior is a process that is being traced by the debugger
 pub struct Inferior {
     child: Child,
 }
@@ -34,12 +37,29 @@ impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
     pub fn new(target: &str, args: &Vec<String>) -> Option<Inferior> {
-        // TODO: implement me!
-        println!(
-            "Inferior::new not implemented! target={}, args={:?}",
-            target, args
-        );
-        None
+        // spawn a child process with PTRACE_TRACEME on
+        let command = unsafe{ 
+            Command::new(target)
+            .args(args)
+            .pre_exec(child_traceme)
+            .spawn() 
+        };     
+        match command {
+            Ok(_child) => {
+                // wait for child process stopping with SIGTRAP
+                let inferior = Inferior{child: _child};
+                let status = inferior.wait(None);
+                match status {
+                    Ok(Status::Stopped(_signal, _usize)) => {
+                        return Some(inferior);
+                    },
+                    _ => return None,
+                }
+            },
+            _ => {
+                panic!("failed to spawn the child process");
+            }
+        };        
     }
 
     /// Returns the pid of this inferior.
@@ -59,5 +79,13 @@ impl Inferior {
             }
             other => panic!("waitpid returned unexpected status: {:?}", other),
         })
+    }
+
+    // Calls cont on this inferior wake up inferior process, so it continues to execute
+    pub fn cont(&self) -> Result<Status, nix::Error> {
+        match ptrace::cont(self.pid(), None){
+            Ok(_) => self.wait(None),
+            Err(e) => panic!("ptrace cont failed: {:?}", e),
+        }
     }
 }

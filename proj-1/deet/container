@@ -12,12 +12,13 @@ docker run \
     `# Set the container user's home directory to our deet directory` \
     -e HOME=/deet \
     `# Run as the current user (instead of root)` \
-    -u $(id -u ${USER}):$(id -g ${USER}) \
+    `# -u $(id -u ${USER}):$(id -g ${USER})` \
     `# Allow ptrace` \
     --cap-add=SYS_PTRACE \
     `# When the container exits, automatically clean up the files it leaves behind` \
     --rm \
     `# Get an interactive terminal` \
-    -it \
+    -idt \
+    -p 127.0.0.1:2222:22 \
     `# Run the deet image` \
     deet "$@"
