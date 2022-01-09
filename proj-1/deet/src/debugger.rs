@@ -1,6 +1,7 @@
 use crate::debugger_command::DebuggerCommand;
 use crate::inferior::Inferior;
 use crate::inferior::Status;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -9,12 +10,22 @@ pub struct Debugger {
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
+    debug_data: DwarfData,
 }
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
-        // TODO (milestone 3): initialize the DwarfData
+        // initialize the DwarfData
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val) => val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                panic!("Could not open file {}", target);
+            }
+            Err(DwarfError::DwarfFormatError(err)) => {
+                panic!("Could not debugging symbols from {}: {:?}", target, err);
+            }
+        };
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -26,6 +37,7 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
+            debug_data
         }
     }
 
@@ -68,6 +80,17 @@ impl Debugger {
                             Err(err) => panic!("{}", err),
                         }
                     }
+                },
+                // handle backtrace command
+                DebuggerCommand::Backtrace => {
+                    if self.inferior.is_none(){
+                        println!("No inferior to backtrace");
+                    } else{
+                        match self.inferior.as_ref().unwrap().print_backtrace(&self.debug_data){
+                            Ok(_) => {},
+                            Err(err) => panic!("{}", err),
+                        }
+                    }
                 }
             }
         }
@@ -77,6 +100,16 @@ impl Debugger {
         match status{
             Status::Stopped(signal, _usize) => {
                 println!("Child stopped (signal {})", signal);
+                let rip = _usize;
+                let line = self.debug_data.get_line_from_addr(rip);
+                let func = self.debug_data.get_function_from_addr(rip);
+                if line.is_none() || func.is_none() {
+                    panic!("no line or function found");
+                } else{
+                    let line = line.as_ref().unwrap();
+                    let func = func.as_ref().unwrap();
+                    println!("Stopped at {}:{}", line.file, line.number);
+                }
             },
             Status::Exited(exit_code) => {
                 println!("Child exited (status {})", exit_code);

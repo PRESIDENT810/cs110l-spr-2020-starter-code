@@ -1,3 +1,5 @@
+use crate::dwarf_data::DwarfData;
+
 use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
@@ -92,10 +94,47 @@ impl Inferior {
     pub fn kill(&mut self) -> Result<(), std::io::Error>{
         match self.child.kill(){
             Ok(_) => {
-                self.wait(None);
+                self.wait(None); // leave no zombie process!
                 return Ok(());
             },
             Err(e) => Err(e),
         }
+    }
+
+    pub fn print_backtrace(&self, debug_data: &DwarfData) -> Result<(), nix::Error>{
+        let regs = ptrace::getregs(self.pid()).expect("getregs failed");   
+        let mut rip = regs.rip as usize;
+        let mut rbp = regs.rbp as usize;
+        // println!("%rip register: {:#x}", &regs.rip);
+        
+        loop{
+            let line = debug_data.get_line_from_addr(rip);
+            let func = debug_data.get_function_from_addr(rip);
+            
+            if line.is_none() || func.is_none() {
+                panic!("no line or function found");
+            } else{
+                let line = line.as_ref().unwrap();
+                let func = func.as_ref().unwrap();
+                println!("{} ({}:{})", func, line.file, line.number);
+                if func == "main"{
+                    break;
+                }
+                match ptrace::read(self.pid(), (rbp+8) as ptrace::AddressType){
+                    Ok(addr) => {
+                        rip = addr as usize;
+                    },
+                    Err(e) => panic!("read failed: {:?}", e),
+                }
+                match ptrace::read(self.pid(), (rbp) as ptrace::AddressType){
+                    Ok(addr) => {
+                        rbp = addr as usize;
+                    },
+                    Err(e) => panic!("read failed: {:?}", e),
+                }
+            }
+        }
+
+        return Ok(());
     }
 }
