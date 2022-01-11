@@ -1,4 +1,5 @@
 use crate::dwarf_data::DwarfData;
+use crate::debugger::Breakpoint;
 
 use nix::sys::ptrace;
 use nix::sys::signal;
@@ -8,6 +9,8 @@ use std::process::Child;
 use std::process::Command;
 use std::os::unix::process::CommandExt;
 use std::mem::size_of;
+use std::collections::HashMap;
+
 
 fn align_addr_to_word(addr: usize) -> usize {
     addr & (-(size_of::<usize>() as isize) as usize)
@@ -43,7 +46,7 @@ pub struct Inferior {
 impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
-    pub fn new(target: &str, args: &Vec<String>, breakpoints: &Vec<usize>) -> Option<Inferior> {
+    pub fn new(target: &str, args: &Vec<String>, breakpoint_map: &mut HashMap<usize, Breakpoint>) -> Option<Inferior> {
         // spawn a child process with PTRACE_TRACEME on
         let command = unsafe{ 
             Command::new(target)
@@ -59,7 +62,7 @@ impl Inferior {
                 match status {
                     Ok(Status::Stopped(_signal, _usize)) => {
                         // set breakpoints
-                        inferior.set_breakpoints(breakpoints);
+                        inferior.set_breakpoints(breakpoint_map);
                         return Some(inferior);
                     },
                     _ => return None,
@@ -71,27 +74,35 @@ impl Inferior {
         };        
     }
 
-    pub fn set_breakpoints(&mut self, breakpoints: &Vec<usize>) {
-        for addr in breakpoints {
-            self.write_byte(*addr, 0xcc);
+    pub fn set_breakpoints(&mut self, breakpoint_map: &mut HashMap<usize, Breakpoint>) {
+        for mut pair in breakpoint_map {
+            let orig_byte = self.write_byte(*pair.0, 0xcc).expect("failed to write breakpoint");
+            pair.1.orig_byte = orig_byte;
         }
+    }
+
+    pub fn set_breakpoint(&mut self, breakpoint: &mut Breakpoint) {
+        let orig_byte = self.write_byte(breakpoint.addr, 0xcc).expect("failed to write breakpoint");
+        breakpoint.orig_byte = orig_byte;
     }
 
     fn write_byte(&mut self, addr: usize, val: u8) -> Result<u8, nix::Error> {
         let aligned_addr = align_addr_to_word(addr);
+        // println!("writing val {:#x} to addr {:#x} ((aligned {}) ) with pid {}", val, addr, aligned_addr, self.pid());
         let byte_offset = addr - aligned_addr;
-        let word = ptrace::read(self.pid(), aligned_addr as ptrace::AddressType)? as u64;
+        let word = ptrace::read(self.pid(), aligned_addr as ptrace::AddressType).unwrap() as u64;
+        // println!("original word: {:#x}", word);
         let orig_byte = (word >> 8 * byte_offset) & 0xff;
         let masked_word = word & !(0xff << 8 * byte_offset);
         let updated_word = masked_word | ((val as u64) << 8 * byte_offset);
+        // println!("updated word: {:#x}", updated_word);
         ptrace::write(
             self.pid(),
             aligned_addr as ptrace::AddressType,
             updated_word as *mut std::ffi::c_void,
-        )?;
+        ).unwrap();
         Ok(orig_byte as u8)
     }
-
 
     /// Returns the pid of this inferior.
     pub fn pid(&self) -> Pid {
@@ -113,7 +124,31 @@ impl Inferior {
     }
 
     // Calls cont on this inferior wake up inferior process, so it continues to execute
-    pub fn cont(&self) -> Result<Status, nix::Error> {
+    pub fn cont(&mut self, breakpoint_map: &HashMap<usize, Breakpoint>) -> Result<Status, nix::Error> {
+        // set rip = rip-1 to rewind the instruction pointer
+        let last_rip = ptrace::getregs(self.pid()).expect("getregs failed").rip-1;   
+        // println!("Continue from address: {:#x}", &last_rip);
+        // if inferior is stopped at a breakpoint
+        
+        if breakpoint_map.get(&(last_rip as usize)).is_some() {
+            // println!("breakpoint hit!");
+            // remove breakpoint by restoring the first byte of the instruction we replaced
+            let current_bp = breakpoint_map.get(&(last_rip as usize)).unwrap();
+            self.write_byte(last_rip as usize, current_bp.orig_byte).expect("failed to remote breakpoint");
+            
+            let mut regs = ptrace::getregs(self.pid()).expect("getregs failed");
+            regs.rip = last_rip;
+            ptrace::setregs(self.pid(), regs);
+            
+            // step to the next instruction
+            ptrace::step(self.pid(), None)?;
+            self.wait(None);
+
+            // restore the breakpoint
+            self.write_byte(last_rip as usize, 0xcc).expect("failed to restore breakpoint");
+        }
+
+        // continue to resome normal execution
         match ptrace::cont(self.pid(), None){
             Ok(_) => self.wait(None),
             Err(e) => panic!("ptrace cont failed: {:?}", e),

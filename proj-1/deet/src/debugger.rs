@@ -3,7 +3,15 @@ use crate::inferior::Inferior;
 use crate::inferior::Status;
 use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use rustyline::error::ReadlineError;
+use nix::sys::ptrace;
 use rustyline::Editor;
+use std::collections::HashMap;
+
+#[derive(Clone)]
+pub struct Breakpoint{
+    pub addr: usize,
+    pub orig_byte: u8,
+}
 
 pub struct Debugger {
     target: String,
@@ -11,7 +19,7 @@ pub struct Debugger {
     readline: Editor<()>,
     inferior: Option<Inferior>,
     debug_data: DwarfData,
-    breakpoints: Vec<usize>,
+    breakpoint_map: HashMap<usize, Breakpoint>,
 }
 
 impl Debugger {
@@ -39,7 +47,7 @@ impl Debugger {
             readline,
             inferior: None,
             debug_data,
-            breakpoints: Vec::new(),
+            breakpoint_map: HashMap::new(),
         }
     }
 
@@ -53,10 +61,10 @@ impl Debugger {
                         println!("Killing running inferior (pid {})", self.inferior.as_ref().unwrap().pid());
                         self.inferior.as_mut().unwrap().kill();
                     }
-                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.breakpoints) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &mut self.breakpoint_map) {
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        match self.inferior.as_ref().unwrap().cont(){
+                        match self.inferior.as_mut().unwrap().cont(&self.breakpoint_map){
                             Ok(status) => self.handle_status(status),
                             Err(err) => panic!("{}", err),
                         }
@@ -77,7 +85,7 @@ impl Debugger {
                     if self.inferior.is_none(){
                         println!("No inferior to continue");
                     } else {
-                        match self.inferior.as_ref().unwrap().cont(){
+                        match self.inferior.as_mut().unwrap().cont(&self.breakpoint_map){
                             Ok(status) => self.handle_status(status),
                             Err(err) => panic!("{}", err),
                         }
@@ -94,7 +102,7 @@ impl Debugger {
                         }
                     }
                 },
-                // handle breakpoing command
+                // handle breakpoint command
                 DebuggerCommand::Breakpoint(mut addr_str) => {
                     if &addr_str[0..1] == "*"{
                         addr_str.remove(0);
@@ -103,8 +111,12 @@ impl Debugger {
                     // memory breakpoint
                     match addr {
                         Some(addr) => {
-                            println!("Set breakpoint {} at {:#x}", self.breakpoints.len(), addr);
-                            self.breakpoints.push(addr);
+                            println!("Set breakpoint {} at {:#x}", self.breakpoint_map.len(), addr);
+                            let mut breakpoint = Breakpoint{addr: addr, orig_byte: 0};
+                            if self.inferior.is_some(){
+                                self.inferior.as_mut().unwrap().set_breakpoint(&mut breakpoint);
+                            }
+                            self.breakpoint_map.insert(addr, breakpoint);
                         },
                         None => println!("Cannot set breakpoint at {}", addr_str),
                     };
@@ -115,6 +127,8 @@ impl Debugger {
     }
 
     fn handle_status(&self, status: Status) {
+        let rip = ptrace::getregs(self.inferior.as_ref().unwrap().pid()).expect("getregs failed").rip as usize;   
+        // println!("stopped at addr {:#x}", &rip);
         match status{
             Status::Stopped(signal, _usize) => {
                 println!("Child stopped (signal {})", signal);
