@@ -104,10 +104,19 @@ impl Debugger {
                 },
                 // handle breakpoint command
                 DebuggerCommand::Breakpoint(mut addr_str) => {
-                    if &addr_str[0..1] == "*"{
-                        addr_str.remove(0);
-                    }
-                    let addr = parse_address(addr_str.as_str());
+                    let addr = {
+                        if &addr_str[0..1] == "*"{ // memory breakpoint
+                            addr_str.remove(0);
+                            parse_address(addr_str.as_str())
+                        } else {
+                            let parsed = parse_address(addr_str.as_str());
+                            match parsed {
+                                // TODO: implement breakpoint support for multiple files
+                                Some(line) => self.debug_data.get_addr_for_line(None, line),
+                                None => self.debug_data.get_addr_for_function(None, addr_str.as_str()),
+                            }
+                        }
+                    };
                     // memory breakpoint
                     match addr {
                         Some(addr) => {
@@ -195,10 +204,11 @@ impl Debugger {
 }
 
 fn parse_address(addr: &str) -> Option<usize> {
-    let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
-        &addr[2..]
+    if addr.to_lowercase().starts_with("0x") {
+        let addr_without_0x = &addr[2..];
+        return usize::from_str_radix(addr_without_0x, 16).ok();
     } else {
-        &addr
+        let addr_without_0x = &addr;
+        return usize::from_str_radix(addr_without_0x, 10).ok();
     };
-    usize::from_str_radix(addr_without_0x, 16).ok()
 }

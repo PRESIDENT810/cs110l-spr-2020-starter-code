@@ -57,6 +57,7 @@ impl DwarfData {
             Some(filename) => self.get_target_file(filename)?,
             None => self.files.get(0)?,
         };
+        println!("{:?}, {:?}", target_file.lines[10].number, line_number);
         Some(
             target_file
                 .lines
