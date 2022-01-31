@@ -9,8 +9,7 @@ fn main() {
     println!("{}", ref3.to_uppercase());
 }
 ```
-
-
+Does not compile, `ref3.to_uppercase()` mutates s, but ref3 is merely a immutable reference.
 
 Example 2:
 ```
@@ -19,8 +18,7 @@ fn drip_drop() -> &String {
     return &s;
 }
 ```
-
-
+Does not compile, `&s` borrows s, but s's lifetimes expires after this function returns.
 
 Example 3:
 ```
@@ -32,3 +30,4 @@ fn main() {
     println!("{}", s2);
 }
 ```
+Does not compile, `String::from("hello")` is owned by s1 and s2 at the same time.
