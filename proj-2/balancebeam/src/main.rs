@@ -43,7 +43,8 @@ pub struct CmdOptions {
     max_requests_per_minute: usize,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Initialize the logging library. You can print log messages using the `log` macros:
     // https://docs.rs/log/0.4.8/log/ You are welcome to continue using print! statements; this
     // just looks a little prettier.
@@ -60,5 +61,5 @@ fn main() {
     }
 
     let proxy = proxy::Proxy::new(options);
-    proxy.start();
+    proxy.start().await;
 }
