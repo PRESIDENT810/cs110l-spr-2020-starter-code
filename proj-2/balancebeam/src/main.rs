@@ -1,6 +1,7 @@
 mod proxy;
 mod response;
 mod request;
+mod upstream;
 
 use clap::Parser;
 
@@ -59,7 +60,6 @@ async fn main() {
         log::error!("At least one upstream server must be specified using the --upstream option.");
         std::process::exit(1);
     }
-
     let proxy = proxy::Proxy::new(options);
     proxy.start().await;
 }

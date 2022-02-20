@@ -17,6 +17,8 @@ threadpool = "1.8"
 tokio = { version = "1.17.0", features = ["full"] }
 rand = "0.7"
 parking_lot = "0.10"
+timer = "0.2.0"
+chrono = "0.4.19"
 
 [dev-dependencies]
 nix = "0.17"

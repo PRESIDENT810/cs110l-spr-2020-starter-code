@@ -1,16 +1,19 @@
 use crate::request;
 use crate::response;
 use crate::CmdOptions;
+use crate::upstream::Upstream;
 
+use std::time::Duration;
 use rand::{Rng, SeedableRng};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time;
 
 /// Contains information about the state of balancebeam (e.g. what servers we are currently proxying
 /// to, what servers have failed, rate limiting counts, etc.)
 ///
 /// You should add fields to this struct in later milestones.
 #[derive(Clone)]
-struct ProxyState {
+pub struct ProxyState {
     /// How frequently we check whether upstream servers are alive (Milestone 4)
     #[allow(dead_code)]
     active_health_check_interval: usize,
@@ -21,7 +24,18 @@ struct ProxyState {
     #[allow(dead_code)]
     max_requests_per_minute: usize,
     /// Addresses of servers that we are proxying to
-    upstream_addresses: Vec<String>,
+    upstream: Upstream,
+}
+
+impl ProxyState{
+    pub fn new(options: CmdOptions) -> ProxyState{
+        return ProxyState{
+            upstream: Upstream::new(options.upstream),
+            active_health_check_interval: options.active_health_check_interval,
+            active_health_check_path: options.active_health_check_path,
+            max_requests_per_minute: options.max_requests_per_minute,
+        };
+    }
 }
 
 pub struct Proxy{
@@ -31,16 +45,31 @@ pub struct Proxy{
 
 impl Proxy{
     pub fn new(options: CmdOptions) -> Proxy{
-        let state = ProxyState {
-            upstream_addresses: options.upstream,
-            active_health_check_interval: options.active_health_check_interval,
-            active_health_check_path: options.active_health_check_path,
-            max_requests_per_minute: options.max_requests_per_minute,
-        };
-        return Proxy{state, bind: options.bind};
+        let bind = options.bind.clone();
+        let state = ProxyState::new(options);
+        return Proxy{state, bind};
     }
 
     pub async fn start(&self){
+        let self_clone = self.clone();
+        let interval = self_clone.state.active_health_check_interval.clone();
+        let path = self_clone.state.active_health_check_path.clone();
+        let upstream_addr_lock = self_clone.state.upstream.upstream_addr_lock.clone();
+        let removed_addr_lock = self_clone.state.upstream.removed_addr_lock.clone();
+
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_millis(interval as u64));
+
+            loop {
+                interval.tick().await;
+                Upstream::active_health_check(
+                    upstream_addr_lock.clone(),
+                    removed_addr_lock.clone(),
+                    path.clone(),
+                ).await;
+            }
+        });
+
         // Start listening for connections
         let listener = match TcpListener::bind(&self.bind).await {
             Ok(listener) => listener,
@@ -66,14 +95,31 @@ impl Proxy{
 
 // setup connection with a random upstream server
 async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
-    let mut rng = rand::rngs::StdRng::from_entropy();
-    let upstream_idx = rng.gen_range(0, state.upstream_addresses.len());
-    let upstream_ip = &state.upstream_addresses[upstream_idx];
-    TcpStream::connect(upstream_ip).await.or_else(|err| {
-        log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
-        Err(err)
-    })
-    // TODO: implement failover (milestone 3)
+    loop {
+        let upstream = &state.upstream;
+        let mut rng = rand::rngs::StdRng::from_entropy();
+        let upstream_len = upstream.len().await;
+        if upstream_len == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "No available upstream servers"));
+        }
+        let upstream_idx = rng.gen_range(0, upstream_len);
+        let upstream_ip = upstream.get(upstream_idx).await;
+
+        let res = TcpStream::connect(&upstream_ip).await;
+        match res{
+            Ok(stream) => return Ok(stream),
+            Err(err) => {
+                log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
+                let upstream_addr_lock = state.upstream.upstream_addr_lock.clone();
+                let removed_addr_lock = state.upstream.removed_addr_lock.clone();
+                Upstream::try_remove(
+                    upstream_addr_lock,
+                    removed_addr_lock,
+                    &upstream_ip).await;
+                continue;
+            }
+        }
+    }
 }
 
 // forward the response received from upstream server to client
