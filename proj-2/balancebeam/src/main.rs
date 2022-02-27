@@ -27,7 +27,7 @@ pub struct CmdOptions {
     #[clap(
         long,
         help = "Perform active health checks on this interval (in seconds)",
-        default_value = "10"
+        default_value = "0"
     )]
     active_health_check_interval: usize,
     #[clap(
@@ -60,6 +60,11 @@ async fn main() {
         log::error!("At least one upstream server must be specified using the --upstream option.");
         std::process::exit(1);
     }
+    log::info!("[Initialize proxy] bind = {:?}", &options.bind);
+    log::info!("[Initialize proxy] upstream = {:?}", &options.upstream);
+    log::info!("[Initialize proxy] active_health_check_interval = {:?}", &options.active_health_check_interval);
+    log::info!("[Initialize proxy] active_health_check_path = {:?}", &options.active_health_check_path);
     let proxy = proxy::Proxy::new(options);
+
     proxy.start().await;
 }

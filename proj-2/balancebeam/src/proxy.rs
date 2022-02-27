@@ -15,10 +15,8 @@ use tokio::time;
 #[derive(Clone)]
 pub struct ProxyState {
     /// How frequently we check whether upstream servers are alive (Milestone 4)
-    #[allow(dead_code)]
     active_health_check_interval: usize,
     /// Where we should send requests when doing active health checks (Milestone 4)
-    #[allow(dead_code)]
     active_health_check_path: String,
     /// Maximum number of requests an individual IP can make in a minute (Milestone 5)
     #[allow(dead_code)]
@@ -57,28 +55,30 @@ impl Proxy{
         let upstream_addr_lock = self_clone.state.upstream.upstream_addr_lock.clone();
         let removed_addr_lock = self_clone.state.upstream.removed_addr_lock.clone();
 
-        tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_millis(interval as u64));
+        if interval != 0{
+            tokio::spawn(async move {
+                let mut interval = time::interval(Duration::from_secs(interval as u64));
 
-            loop {
-                interval.tick().await;
-                Upstream::active_health_check(
-                    upstream_addr_lock.clone(),
-                    removed_addr_lock.clone(),
-                    path.clone(),
-                ).await;
-            }
-        });
+                loop {
+                    Upstream::active_health_check(
+                        upstream_addr_lock.clone(),
+                        removed_addr_lock.clone(),
+                        path.clone(),
+                    ).await;
+                    interval.tick().await;
+                }
+            });
+        }
 
         // Start listening for connections
         let listener = match TcpListener::bind(&self.bind).await {
             Ok(listener) => listener,
             Err(err) => {
-                log::error!("Could not bind to {}: {}", &self.bind, err);
+                log::error!("[start] Could not bind to {}: {}", &self.bind, err);
                 std::process::exit(1);
             }
         };
-        log::info!("Listening for requests on {}", &self.bind);
+        log::info!("[start] Listening for requests on {}", &self.bind);
 
         loop {
             let incoming = listener.accept().await;
@@ -109,7 +109,7 @@ async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::E
         match res{
             Ok(stream) => return Ok(stream),
             Err(err) => {
-                log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
+                log::error!("[connect_to_upstream] Failed to connect to upstream {}: {}", upstream_ip, err);
                 let upstream_addr_lock = state.upstream.upstream_addr_lock.clone();
                 let removed_addr_lock = state.upstream.removed_addr_lock.clone();
                 Upstream::try_remove(
@@ -125,9 +125,9 @@ async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::E
 // forward the response received from upstream server to client
 async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
-    log::info!("{} <- {}", client_ip, response::format_response_line(&response));
+    log::info!("[send_response] {} <- {}", client_ip, response::format_response_line(&response));
     if let Err(error) = response::write_to_stream(&response, client_conn).await {
-        log::warn!("Failed to send response to client: {}", error);
+        log::warn!("[send_response] Failed to send response to client: {}", error);
         return;
     }
 }

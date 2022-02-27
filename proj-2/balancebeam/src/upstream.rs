@@ -1,4 +1,4 @@
-use crate::request;
+use crate::{request, response};
 
 use tokio::sync::RwLock;
 use std::sync::Arc;
@@ -96,58 +96,55 @@ impl Upstream{
         path: String,
     ) {
         // Clone these values so we can move it into the following closure, whose lifetime exceeds this method's
-        let upstream_addr_lock = upstream_addr_lock.clone();
-        let removed_addr_lock = removed_addr_lock.clone();
         let path = path.clone();
 
-        tokio::spawn(async move {
-            // check unavailable upstream servers, add it to available upstreams if probe returns true
-            let removed_addr = removed_addr_lock.read().await;
-            let mut to_push: Vec<String> = Vec::new();
+        // check unavailable upstream servers, add it to available upstreams if probe returns true
+        let removed_addr = removed_addr_lock.read().await;
+        let mut to_push: Vec<String> = Vec::new();
 
-            // find out servers to be pushed
-            for i in 0..removed_addr.len(){
-                let upstream_ip = &removed_addr[i];
-                let alive = Self::probe(&path, upstream_ip).await;
-                if alive {
-                    log::info!("[active_health_check]: {} is now alive", upstream_ip);
-                    to_push.push(upstream_ip.clone());
-                }
+        // find out servers to be pushed
+        for i in 0..removed_addr.len(){
+            let upstream_ip = &removed_addr[i];
+            let alive = Self::probe(&path, upstream_ip).await;
+            if alive {
+                log::info!("[active_health_check]: {} is now alive", upstream_ip);
+                to_push.push(upstream_ip.clone());
             }
-            drop(removed_addr);
+        }
+        drop(removed_addr);
 
-            // push servers to available upstreams
-            for addr in &to_push{
-                Self::try_push(
-                    upstream_addr_lock.clone(),
-                    removed_addr_lock.clone(),
-                    &addr
-                ).await;
+        // push servers to available upstreams
+        for addr in &to_push{
+            Self::try_push(
+                upstream_addr_lock.clone(),
+                removed_addr_lock.clone(),
+                &addr
+            ).await;
+        }
+
+        // check available upstream servers, add it to unavailable upstreams if probe returns false
+        let upstream_addr = upstream_addr_lock.read().await;
+        let mut to_remove: Vec<String> = Vec::new();
+
+        // find out servers to be removed
+        for i in 0..upstream_addr.len(){
+            let upstream_ip = &upstream_addr[i];
+            let alive = Self::probe(&path, upstream_ip).await;
+            if !alive{
+                log::info!("[active_health_check]: {} is now dead", upstream_ip);
+                to_remove.push(upstream_ip.clone());
             }
+        }
+        drop(upstream_addr);
 
-            // check available upstream servers, add it to unavailable upstreams if probe returns false
-            let upstream_addr = upstream_addr_lock.read().await;
-            let mut to_remove: Vec<String> = Vec::new();
-
-            // find out servers to be removed
-            for i in 0..upstream_addr.len(){
-                let upstream_ip = &upstream_addr[i];
-                let alive = Self::probe(&path, upstream_ip).await;
-                if !alive{
-                    log::info!("[active_health_check]: {} is now dead", upstream_ip);
-                    to_remove.push(upstream_ip.clone());
-                }
-            }
-
-            // remove servers from available upstreams
-            for addr in to_remove{
-                Self::try_remove(
-                    upstream_addr_lock.clone(),
-                    removed_addr_lock.clone(),
-                    &addr
-                ).await;
-            }
-        });
+        // remove servers from available upstreams
+        for addr in to_remove{
+            Self::try_remove(
+                upstream_addr_lock.clone(),
+                removed_addr_lock.clone(),
+                &addr
+            ).await;
+        }
     }
 
     /// Probe a server to see if it's alive
@@ -158,20 +155,41 @@ impl Upstream{
             .method(http::Method::GET)
             .uri(path)
             .header("Host", upstream_ip)
-            .body(vec![0 as u8])
+            .body(Vec::new())
             .unwrap();
+
+        // If we cannot establish TCP connection, upstream is failure
         let res = TcpStream::connect(&upstream_ip).await;
         let mut upstream_conn = match res{
             Ok(stream) => { stream },
             Err(err) => {
-                log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
+                log::error!("[probe] Failed to connect to upstream {}: {}", upstream_ip, err);
                 return false;
             }
         };
+
+        // If we cannot send request, upstream is failure
         if let Err(error) = request::write_to_stream(&request, &mut upstream_conn).await {
-            log::error!("Failed to send request to upstream {}: {}", upstream_ip, error);
+            log::error!("[probe] Failed to send request to upstream {}: {}", upstream_ip, error);
             return false;
         }
+
+        // If we cannot read response, upstream is failure
+        let response = match response::read_from_stream(&mut upstream_conn, request.method()).await {
+            Ok(response) => response,
+            Err(error) => {
+                log::error!("[probe] Error reading response from server: {:?}", error);
+                return false;
+            }
+        };
+
+        // If status code is not 200, upstream is failure
+        if response.status() != 200{
+            log::error!("[probe] Server {:?} returns a non-200 status code", upstream_ip);
+            return false;
+        }
+
+        log::info!("[probe] Server {} returns a 200 status code", upstream_ip);
         return true;
     }
 }
