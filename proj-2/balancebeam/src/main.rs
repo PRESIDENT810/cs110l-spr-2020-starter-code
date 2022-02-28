@@ -2,6 +2,7 @@ mod proxy;
 mod response;
 mod request;
 mod upstream;
+mod rate_limiting;
 
 use clap::Parser;
 
@@ -64,6 +65,7 @@ async fn main() {
     log::info!("[Initialize proxy] upstream = {:?}", &options.upstream);
     log::info!("[Initialize proxy] active_health_check_interval = {:?}", &options.active_health_check_interval);
     log::info!("[Initialize proxy] active_health_check_path = {:?}", &options.active_health_check_path);
+    log::info!("[Initialize proxy] active_health_check_path = {:?}", &options.max_requests_per_minute);
     let proxy = proxy::Proxy::new(options);
 
     proxy.start().await;

@@ -2,11 +2,14 @@ use crate::request;
 use crate::response;
 use crate::CmdOptions;
 use crate::upstream::Upstream;
+use crate::rate_limiting::RateLimitMap;
 
 use std::time::Duration;
 use rand::{Rng, SeedableRng};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Contains information about the state of balancebeam (e.g. what servers we are currently proxying
 /// to, what servers have failed, rate limiting counts, etc.)
@@ -39,13 +42,16 @@ impl ProxyState{
 pub struct Proxy{
     state: ProxyState,
     bind: String,
+    rate_limit_map: Arc<Mutex<RateLimitMap>>,
 }
 
 impl Proxy{
     pub fn new(options: CmdOptions) -> Proxy{
         let bind = options.bind.clone();
+        let max_requests_per_minute = options.max_requests_per_minute.clone();
         let state = ProxyState::new(options);
-        return Proxy{state, bind};
+        let rate_limit_map = Arc::new(Mutex::new(RateLimitMap::new(max_requests_per_minute)));
+        return Proxy{state, bind, rate_limit_map};
     }
 
     pub async fn start(&self){
@@ -82,11 +88,12 @@ impl Proxy{
 
         loop {
             let incoming = listener.accept().await;
+            let rate_limit_map = self.rate_limit_map.clone();
             if let Ok((stream, _)) = incoming {
                 let state = self.state.clone();
                 // Handle the connection!
                 tokio::spawn(async move {
-                    handle_connection(&state, stream).await;
+                    handle_connection(&state, stream, rate_limit_map.clone()).await;
                 });
             };
         }
@@ -133,7 +140,7 @@ async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Ve
 }
 
 // handle a connection from client
-async fn handle_connection(state: &ProxyState, mut client_conn: TcpStream) {
+async fn handle_connection(state: &ProxyState, mut client_conn: TcpStream, rate_limit_map: Arc<Mutex<RateLimitMap>>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
 
@@ -184,6 +191,15 @@ async fn handle_connection(state: &ProxyState, mut client_conn: TcpStream) {
             upstream_ip,
             request::format_request_line(&request)
         );
+
+        // Determine whether this request should be dropped due to rate limiting
+        let mut map = rate_limit_map.lock().await;
+        if !map.should_accept(client_ip.clone()){
+            let response = response::make_http_error(http::StatusCode::TOO_MANY_REQUESTS);
+            send_response(&mut client_conn, &response).await;
+            return;
+        }
+        drop(map);
 
         // Add X-Forwarded-For header so that the upstream server knows the client's IP address.
         // (We're the ones connecting directly to the upstream server, so without this header, the
